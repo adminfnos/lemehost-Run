@@ -1,0 +1,32 @@
+name: Auto Start Lemehost Server
+
+on:
+  workflow_dispatch:  # 允许手动触发
+  repository_dispatch:
+    types: [start-server]  # 允许外部触发（cron-job.org 用这个）
+
+jobs:
+  start-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start the server
+        run: |
+          echo "正在启动服务器..."
+          
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            "https://lemehost.com/server/start?id=${{ secrets.SERVER_ID }}" \
+            -H "Cookie: _csrf-frontend=${{ secrets.CSRF_TOKEN }}; _identity-frontend=${{ secrets.IDENTITY_TOKEN }}; advanced-frontend=${{ secrets.ADVANCED_TOKEN }}; source=${{ secrets.SOURCE_TOKEN }}" \
+            -H "X-CSRF-Token: ${{ secrets.CSRF_TOKEN }}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -H "Referer: https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}" \
+            --data "_csrf-frontend=${{ secrets.CSRF_TOKEN }}")
+          
+          echo "HTTP 状态码: $RESPONSE"
+          
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
+            echo "✅ 服务器启动请求成功！"
+          else
+            echo "❌ 启动失败，状态码: $RESPONSE"
+            exit 1
+          fi

@@ -13,13 +13,24 @@ jobs:
         run: |
           echo "📡 正在获取服务器页面状态..."
 
-          PAGE=$(curl -s \
+          PAGE=$(curl -s -L \
             "https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}" \
             -H "Cookie: _csrf-frontend=${{ secrets.CSRF_TOKEN }}; _identity-frontend=${{ secrets.IDENTITY_TOKEN }}; advanced-frontend=${{ secrets.ADVANCED_TOKEN }}; source=${{ secrets.SOURCE_TOKEN }}" \
-            -H "Referer: https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}")
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-          # 检查页面内容是否包含 offline 关键字
-          if echo "$PAGE" | grep -q "offline"; then
+          # 调试：打印页面包含的关键词
+          echo "=== 页面关键词检测 ==="
+          echo "$PAGE" | grep -i "offline\|online\|login\|sign in\|status" || echo "⚠️ 没有找到任何关键词，Cookie可能已失效"
+          echo "=== 检测结束 ==="
+
+          # 判断是否被踢回登录页（Cookie失效）
+          if echo "$PAGE" | grep -qi "login\|sign in\|请登录"; then
+            echo "❌ Cookie 已失效，被重定向到登录页，请更新 GitHub Secrets 里的 Cookie！"
+            exit 1
+          fi
+
+          # 判断服务器状态
+          if echo "$PAGE" | grep -qi "offline"; then
             echo "🔴 检测到服务器 offline，准备启动..."
 
             RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \

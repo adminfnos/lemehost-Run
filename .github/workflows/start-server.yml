@@ -1,32 +1,45 @@
 name: Auto Start Lemehost Server
 
 on:
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
   repository_dispatch:
-    types: [start-server]  # 允许外部触发（cron-job.org 用这个）
+    types: [start-server]
 
 jobs:
-  start-server:
+  check-and-start:
     runs-on: ubuntu-latest
     steps:
-      - name: Start the server
+      - name: 检查服务器状态并按需启动
         run: |
-          echo "正在启动服务器..."
-          
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
-            "https://lemehost.com/server/start?id=${{ secrets.SERVER_ID }}" \
+          echo "📡 正在获取服务器页面状态..."
+
+          PAGE=$(curl -s \
+            "https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}" \
             -H "Cookie: _csrf-frontend=${{ secrets.CSRF_TOKEN }}; _identity-frontend=${{ secrets.IDENTITY_TOKEN }}; advanced-frontend=${{ secrets.ADVANCED_TOKEN }}; source=${{ secrets.SOURCE_TOKEN }}" \
-            -H "X-CSRF-Token: ${{ secrets.CSRF_TOKEN }}" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -H "Referer: https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}" \
-            --data "_csrf-frontend=${{ secrets.CSRF_TOKEN }}")
-          
-          echo "HTTP 状态码: $RESPONSE"
-          
-          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
-            echo "✅ 服务器启动请求成功！"
+            -H "Referer: https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}")
+
+          # 检查页面内容是否包含 offline 关键字
+          if echo "$PAGE" | grep -q "offline"; then
+            echo "🔴 检测到服务器 offline，准备启动..."
+
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              "https://lemehost.com/server/start?id=${{ secrets.SERVER_ID }}" \
+              -H "Cookie: _csrf-frontend=${{ secrets.CSRF_TOKEN }}; _identity-frontend=${{ secrets.IDENTITY_TOKEN }}; advanced-frontend=${{ secrets.ADVANCED_TOKEN }}; source=${{ secrets.SOURCE_TOKEN }}" \
+              -H "X-CSRF-Token: ${{ secrets.CSRF_TOKEN }}" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -H "Referer: https://lemehost.com/server/view?id=${{ secrets.SERVER_ID }}" \
+              --data "_csrf-frontend=${{ secrets.CSRF_TOKEN }}")
+
+            echo "HTTP 状态码: $RESPONSE"
+
+            if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
+              echo "✅ 启动指令发送成功！"
+            else
+              echo "❌ 启动失败，状态码: $RESPONSE"
+              exit 1
+            fi
+
           else
-            echo "❌ 启动失败，状态码: $RESPONSE"
-            exit 1
+            echo "🟢 服务器运行正常，无需启动，跳过。"
           fi

@@ -6,13 +6,8 @@ const { chromium } = require('playwright');
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
 
-  try {
-    const cookies = JSON.parse(process.env.MY_COOKIES);
-    await context.addCookies(cookies);
-  } catch (e) {
-    console.error("Cookie 解析失败");
-    process.exit(1);
-  }
+  const cookies = JSON.parse(process.env.MY_COOKIES);
+  await context.addCookies(cookies);
 
   const page = await context.newPage();
   const url = 'https://lemehost.com/server/10131731/free-plan';
@@ -21,7 +16,7 @@ const { chromium } = require('playwright');
     console.log("正在访问页面...");
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // 1. 延长续期 (这一步你之前跑通了，保留)
+    // --- 第一步：延长续期 ---
     const extendBtn = page.locator('text=Extend time');
     if (await extendBtn.isVisible()) {
       await extendBtn.click();
@@ -29,40 +24,40 @@ const { chromium } = require('playwright');
       await page.waitForTimeout(5000); 
     }
 
-    // 2. 刷新并检查状态
+    // --- 第二步：刷新页面 ---
     await page.reload({ waitUntil: 'domcontentloaded' });
-    console.log("🔄 页面已刷新，正在检查红点状态...");
+    console.log("🔄 页面已刷新，正在通过身份证号检测状态...");
 
-    // 重点：通过 CSS 选择器定位那个红点或 offline 容器
-    // 根据截图，它通常是一个带有红色背景或特定 class 的 span
-    const offlineDetector = page.locator('span.badge-danger, .text-danger, i.fa-circle.text-danger, span:has-text("offline")');
+    // --- 第三步：使用你提供的身份证精准检测 ---
+    // 红点状态选择器
+    const offlineSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)';
+    const statusElement = page.locator(offlineSelector);
     
-    // 如果上面几种常见的 offline 标志能找到任何一个
-    const count = await offlineDetector.count();
-    const bodyText = await page.innerText('body');
-    const isOffline = count > 0 || bodyText.toLowerCase().includes('offline');
+    // 获取状态文字
+    const statusText = await statusElement.innerText().catch(() => "");
+    console.log(`当前探测到的状态文字为: "${statusText}"`);
 
-    if (isOffline) {
-      console.log(`⚠️ 检测到离线标志 (匹配数: ${count})，准备点击 Start...`);
+    // 判断逻辑：如果文字包含 offline 或者该元素存在
+    if (statusText.toLowerCase().includes('offline')) {
+      console.log("⚠️ 确认服务器处于 offline 状态，准备开机...");
       
-      // 定位 Start 按钮 (使用更强力的选择器)
-      const startBtn = page.locator('button:has-text("Start"), a:has-text("Start"), .btn-success:has-text("Start")').first();
+      // 使用你提供的 Start 按钮身份证
+      const startBtnSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)';
+      const startBtn = page.locator(startBtnSelector);
       
       if (await startBtn.isVisible()) {
         await startBtn.click();
-        console.log("🚀 Start 按钮已点击！");
-        // 点击后额外等一会，确保指令发出
+        console.log("🚀 Start 按钮已精准点击！服务器正在启动...");
         await page.waitForTimeout(8000); 
       } else {
-        console.log("❌ 确认离线，但没找到 Start 按钮。");
+        console.log("❌ 身份证匹配到了 offline，但 Start 按钮在页面上不可见。");
       }
     } else {
-      console.log("✨ 未检测到离线标志，服务器应该是 Online 状态。");
+      console.log("✨ 状态显示正常，跳过开机步骤。");
     }
 
   } catch (err) {
-    console.error("运行出错:", err.message);
-    process.exit(1);
+    console.error("❌ 执行出错:", err.message);
   } finally {
     await browser.close();
   }

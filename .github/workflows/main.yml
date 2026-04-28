@@ -1,0 +1,29 @@
+name: LemeHost Auto Renew
+
+on:
+  workflow_dispatch: # 支持手动触发
+  repository_dispatch:
+    types: [cron_trigger] # 供 cron-job.org 调用
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install playwright
+          npx playwright install chromium
+
+      - name: Run Script
+        env:
+          # 在 GitHub Repo 的 Settings -> Secrets and variables -> Actions 中添加 MY_COOKIES
+          MY_COOKIES: ${{ secrets.MY_COOKIES }}
+        run: node auto_renew.js

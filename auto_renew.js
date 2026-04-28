@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
     const cookies = JSON.parse(process.env.MY_COOKIES);
     await context.addCookies(cookies);
   } catch (e) {
-    console.error("Cookie 格式解析失败，请检查 GitHub Secrets 设置:", e.message);
+    console.error("Cookie 解析失败");
     process.exit(1);
   }
 
@@ -18,49 +18,48 @@ const { chromium } = require('playwright');
   const url = 'https://lemehost.com/server/10131731/free-plan';
 
   try {
-    console.log("正在访问页面 (设置 60s 超时)...");
-    
-    // 关键修改：将等待条件改为 domcontentloaded，并增加超时时间
-    await page.goto(url, { 
-        waitUntil: 'domcontentloaded', 
-        timeout: 60000 
-    });
+    console.log("正在访问页面...");
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    console.log("页面基础架构已加载，开始查找按钮...");
-
-    // 1. 点击 Extend time
-    // 增加一点等待，确保按钮能被找到
+    // 1. 延长续期
     const extendBtn = page.locator('text=Extend time');
-    await extendBtn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => console.log("未看到 Extend time 按钮"));
-    
     if (await extendBtn.isVisible()) {
       await extendBtn.click();
       console.log("✅ 已点击 Extend time");
-      await page.waitForTimeout(3000); 
+      await page.waitForTimeout(5000); 
     }
 
-    // 2. 刷新页面
+    // 2. 刷新并检查状态
     await page.reload({ waitUntil: 'domcontentloaded' });
-    console.log("🔄 页面已刷新");
+    console.log("🔄 页面已刷新，正在精准检测服务器状态...");
 
-    // 3. 检查状态并开机
-    const statusText = await page.innerText('body');
-    if (statusText.includes('offline')) {
-      console.log("⚠️ 检测到 offline，正在尝试点击 Start...");
-      const startBtn = page.locator('button:has-text("Start"), .btn-success:has-text("Start")');
+    // 优化后的判断逻辑：
+    // 我们同时查找文本 "offline" (不区分大小写) 和那个红点标志
+    const isOffline = await page.evaluate(() => {
+      const bodyText = document.body.innerText.toLowerCase();
+      // 检查是否包含 offline 关键字
+      return bodyText.includes('offline');
+    });
+
+    if (isOffline) {
+      console.log("⚠️ 确认服务器处于离线状态，准备点火开机...");
+      
+      // 尝试多种可能的 Start 按钮选择器
+      const startBtn = page.locator('button:has-text("Start"), .btn-success:has-text("Start"), .btn:has-text("Start")');
+      
       if (await startBtn.isVisible()) {
         await startBtn.click();
-        console.log("🚀 已点击 Start 按钮");
-        await page.waitForTimeout(2000);
+        console.log("🚀 开机指令已发出！");
+        await page.waitForTimeout(5000); // 给系统一点反应时间
+      } else {
+        console.log("❌ 找到了 offline 状态，但没找到 Start 按钮，请检查页面是否有弹窗遮挡。");
       }
     } else {
-      console.log("✨ 服务器当前处于 Online 状态。");
+      console.log("✨ 服务器当前显示为 Online，跳过开机步骤。");
     }
 
   } catch (err) {
-    console.error("执行过程中报错:", err.message);
-    // 如果超时了，截个图看看页面到底卡在哪了
-    await page.screenshot({ path: 'timeout_debug.png' });
+    console.error("运行出错:", err.message);
     process.exit(1);
   } finally {
     await browser.close();

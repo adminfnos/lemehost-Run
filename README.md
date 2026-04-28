@@ -2,29 +2,29 @@
 
 获取 Cookies:   
 登录 lemehost.com按 F12 打开开发者工具点击 Application → Cookies → https://lemehost.com      
-_csrf-frontend    
-_identity-frontend    
-advanced-frontend    
-source    
-
-添加变量:   
-CSRF_TOKEN=_csrf-frontend 的 Value    
-IDENTITY_TOKEN= _identity-frontend 的 Value    
-ADVANCED_TOKEN= advanced-frontend 的 Value    
-SOURCE_TOKEN= source 的 Value    
-SERVER_ID= 10131731（从网址里取）  
-
-
-cron-job.org 设置定时触发   
-URL：
+新建 MY_COOKIES，内容格式如下（请根据你实际抓到的 cookie 修改）：   
 ```
-https://api.github.com/repos/你的GitHub用户名/auto-start-server/dispatches
+[
+  { "name": "lemehost_session", "value": "你的session值", "domain": "lemehost.com", "path": "/" },
+  { "name": "XSRF-TOKEN", "value": "你的token值", "domain": "lemehost.com", "path": "/" }
+]
 ```
-点开 Advanced / Headers，添加：   
-Authorization=Bearer 你刚才复制的Token     
-Accept=application/vnd.github.v3+json   
-Content-Type=application/json   
-Request body（请求体）：   
-```
-{"event_type": "start-server"}
 
+Cron-job.org 触发：
+
+你需要创建一个 Fine-grained Personal Access Token (PAT)，权限给到 Contents: Read & Write 和 Metadata: Read。
+
+在 cron-job.org 中设置 POST 请求：
+
+URL: https://api.github.com/repos/你的用户名/仓库名/dispatches
+
+Header: * Accept: application/vnd.github.v3+json
+
+Authorization: Bearer 你的PAT密钥
+
+User-Agent: Cron-Job-Client
+
+Body (JSON):      
+```
+{"event_type": "cron_trigger"}
+```

@@ -16,7 +16,7 @@ const { chromium } = require('playwright');
     console.log("正在访问页面...");
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // --- 第一步：延长续期 ---
+    // 1. 延长续期
     const extendBtn = page.locator('text=Extend time');
     if (await extendBtn.isVisible()) {
       await extendBtn.click();
@@ -24,24 +24,32 @@ const { chromium } = require('playwright');
       await page.waitForTimeout(5000); 
     }
 
-    // --- 第二步：刷新页面 ---
+    // 2. 刷新页面
     await page.reload({ waitUntil: 'domcontentloaded' });
-    console.log("🔄 页面已刷新，正在通过身份证号检测状态...");
+    console.log("🔄 页面已刷新，正在等待状态从 connecting... 切换...");
 
-    // --- 第三步：使用你提供的身份证精准检测 ---
-    // 红点状态选择器
     const offlineSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)';
     const statusElement = page.locator(offlineSelector);
-    
-    // 获取状态文字
-    const statusText = await statusElement.innerText().catch(() => "");
-    console.log(`当前探测到的状态文字为: "${statusText}"`);
 
-    // 判断逻辑：如果文字包含 offline 或者该元素存在
-    if (statusText.toLowerCase().includes('offline')) {
-      console.log("⚠️ 确认服务器处于 offline 状态，准备开机...");
+    // --- 核心优化：循环等待最终状态 ---
+    let finalStatus = "";
+    for (let i = 0; i < 10; i++) { // 最多等 20 秒
+      finalStatus = await statusElement.innerText().catch(() => "");
+      finalStatus = finalStatus.toLowerCase().trim();
       
-      // 使用你提供的 Start 按钮身份证
+      if (finalStatus === "connecting..." || finalStatus === "") {
+        console.log(`当前状态仍为 "${finalStatus}"，等待 2 秒再试... (${i+1}/10)`);
+        await page.waitForTimeout(2000);
+      } else {
+        break; // 状态变了，退出循环
+      }
+    }
+
+    console.log(`最终探测到的状态为: "${finalStatus}"`);
+
+    // 3. 判断并开机
+    if (finalStatus.includes('offline')) {
+      console.log("⚠️ 确认服务器处于 offline 状态，准备开机...");
       const startBtnSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)';
       const startBtn = page.locator(startBtnSelector);
       
@@ -50,10 +58,12 @@ const { chromium } = require('playwright');
         console.log("🚀 Start 按钮已精准点击！服务器正在启动...");
         await page.waitForTimeout(8000); 
       } else {
-        console.log("❌ 身份证匹配到了 offline，但 Start 按钮在页面上不可见。");
+        console.log("❌ 虽为离线，但 Start 按钮不可见。");
       }
+    } else if (finalStatus.includes('online')) {
+      console.log("✨ 服务器已是在线 (Online) 状态，无需开机。");
     } else {
-      console.log("✨ 状态显示正常，跳过开机步骤。");
+      console.log(`🤔 探测到未知状态 "${finalStatus}"，为安全起见不执行开机。`);
     }
 
   } catch (err) {

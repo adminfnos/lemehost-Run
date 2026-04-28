@@ -21,7 +21,7 @@ const { chromium } = require('playwright');
     console.log("正在访问页面...");
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // 1. 延长续期
+    // 1. 延长续期 (这一步你之前跑通了，保留)
     const extendBtn = page.locator('text=Extend time');
     if (await extendBtn.isVisible()) {
       await extendBtn.click();
@@ -31,31 +31,33 @@ const { chromium } = require('playwright');
 
     // 2. 刷新并检查状态
     await page.reload({ waitUntil: 'domcontentloaded' });
-    console.log("🔄 页面已刷新，正在精准检测服务器状态...");
+    console.log("🔄 页面已刷新，正在检查红点状态...");
 
-    // 优化后的判断逻辑：
-    // 我们同时查找文本 "offline" (不区分大小写) 和那个红点标志
-    const isOffline = await page.evaluate(() => {
-      const bodyText = document.body.innerText.toLowerCase();
-      // 检查是否包含 offline 关键字
-      return bodyText.includes('offline');
-    });
+    // 重点：通过 CSS 选择器定位那个红点或 offline 容器
+    // 根据截图，它通常是一个带有红色背景或特定 class 的 span
+    const offlineDetector = page.locator('span.badge-danger, .text-danger, i.fa-circle.text-danger, span:has-text("offline")');
+    
+    // 如果上面几种常见的 offline 标志能找到任何一个
+    const count = await offlineDetector.count();
+    const bodyText = await page.innerText('body');
+    const isOffline = count > 0 || bodyText.toLowerCase().includes('offline');
 
     if (isOffline) {
-      console.log("⚠️ 确认服务器处于离线状态，准备点火开机...");
+      console.log(`⚠️ 检测到离线标志 (匹配数: ${count})，准备点击 Start...`);
       
-      // 尝试多种可能的 Start 按钮选择器
-      const startBtn = page.locator('button:has-text("Start"), .btn-success:has-text("Start"), .btn:has-text("Start")');
+      // 定位 Start 按钮 (使用更强力的选择器)
+      const startBtn = page.locator('button:has-text("Start"), a:has-text("Start"), .btn-success:has-text("Start")').first();
       
       if (await startBtn.isVisible()) {
         await startBtn.click();
-        console.log("🚀 开机指令已发出！");
-        await page.waitForTimeout(5000); // 给系统一点反应时间
+        console.log("🚀 Start 按钮已点击！");
+        // 点击后额外等一会，确保指令发出
+        await page.waitForTimeout(8000); 
       } else {
-        console.log("❌ 找到了 offline 状态，但没找到 Start 按钮，请检查页面是否有弹窗遮挡。");
+        console.log("❌ 确认离线，但没找到 Start 按钮。");
       }
     } else {
-      console.log("✨ 服务器当前显示为 Online，跳过开机步骤。");
+      console.log("✨ 未检测到离线标志，服务器应该是 Online 状态。");
     }
 
   } catch (err) {

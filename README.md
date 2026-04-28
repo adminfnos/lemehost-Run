@@ -5,8 +5,9 @@
 新建 MY_COOKIES，内容格式如下（请根据你实际抓到的 cookie 修改）：   
 ```
 [
-  { "name": "lemehost_session", "value": "你的session值", "domain": "lemehost.com", "path": "/" },
-  { "name": "XSRF-TOKEN", "value": "你的token值", "domain": "lemehost.com", "path": "/" }
+  { "name": "_csrf-frontend", "value": "填入你的值", "domain": "lemehost.com", "path": "/" },
+  { "name": "_identity-frontend", "value": "填入你的值", "domain": "lemehost.com", "path": "/" },
+  { "name": "advanced-frontend", "value": "填入你的值", "domain": "lemehost.com", "path": "/" }
 ]
 ```
 

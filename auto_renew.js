@@ -15,11 +15,14 @@ const { chromium } = require('playwright');
   try {
     console.log("正在访问页面...");
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    
+    // 截图 1：刚进入页面的样子
+    await page.screenshot({ path: '1_initial_page.png', fullPage: true });
 
     const offlineSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)';
     const statusElement = page.locator(offlineSelector);
 
-    console.log("等待状态加载...");
+    console.log("等待状态从 connecting... 切换...");
     let finalStatus = "";
     for (let i = 0; i < 10; i++) {
       finalStatus = await statusElement.innerText().catch(() => "");
@@ -34,37 +37,33 @@ const { chromium } = require('playwright');
     console.log(`最终确认状态: "${finalStatus}"`);
 
     if (finalStatus.includes('offline')) {
-      console.log("⚠️ 离线状态确认，尝试强力开启...");
-      
       const startBtnSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)';
       const startBtn = page.locator(startBtnSelector);
       
       if (await startBtn.isVisible()) {
-        // --- 核心优化：双重强制点击 ---
-        // 1. 先确保按钮滚动到视野内
-        await startBtn.scrollIntoViewIfNeeded();
-        // 2. 第一次点击（尝试唤醒）
-        await startBtn.click({ force: true });
-        await page.waitForTimeout(1000);
-        // 3. 第二次点击（确认执行）
-        await startBtn.click({ force: true });
+        console.log("准备点击 Start 按钮...");
+        // 截图 2：准备点击前的状态
+        await page.screenshot({ path: '2_before_click.png' });
         
-        console.log("🚀 Start 按钮已执行双重强力点击！");
+        await startBtn.click({ force: true });
+        console.log("🚀 Start 按钮已点击！等待服务器响应...");
         
-        // 关键：点击后等待 10 秒，让网页有足够时间发送 Ajax 请求给后端
+        // 点击后等 10 秒，看看网页有没有变化
         await page.waitForTimeout(10000); 
         
-        // 最后截个图看看点完之后网页上有没有弹出什么报错提醒
-        await page.screenshot({ path: 'after_click.png' });
+        // 截图 3：点击后的最终状态（看看有没有报错信息弹出来）
+        await page.screenshot({ path: '3_after_click.png', fullPage: true });
       } else {
-        console.log("❌ 按钮不可见，无法点击。");
+        console.log("❌ 按钮不可见！");
+        await page.screenshot({ path: 'error_no_button.png' });
       }
     } else {
-      console.log("✨ 服务器是在线状态。");
+      console.log("✨ 服务器在线，无需操作。");
     }
 
   } catch (err) {
     console.error("❌ 出错:", err.message);
+    await page.screenshot({ path: 'error_exception.png' });
   } finally {
     await browser.close();
   }

@@ -11,7 +11,7 @@ const { chromium } = require('playwright');
   await context.addCookies(cookies);
 
   const page = await context.newPage();
-  const url = 'https://lemehost.com/server/10131731/free-plan';
+  const url = 'https://lemehost.com/server/view?id=10131731';
 
   try {
     console.log("正在访问页面，准备检查服务器状态...");

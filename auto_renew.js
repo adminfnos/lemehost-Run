@@ -15,55 +15,59 @@ const { chromium } = require('playwright');
   try {
     console.log("正在访问页面...");
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    
-    // 截图 1：刚进入页面的样子
-    await page.screenshot({ path: '1_initial_page.png', fullPage: true });
+
+    // 1. 延长续期
+    const extendBtn = page.locator('text=Extend time');
+    if (await extendBtn.isVisible()) {
+      await extendBtn.click();
+      console.log("✅ 已点击 Extend time");
+      await page.waitForTimeout(5000); 
+    }
+
+    // 2. 刷新页面
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    console.log("🔄 页面已刷新，正在等待状态从 connecting... 切换...");
 
     const offlineSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)';
     const statusElement = page.locator(offlineSelector);
 
-    console.log("等待状态从 connecting... 切换...");
+    // --- 核心优化：循环等待最终状态 ---
     let finalStatus = "";
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 10; i++) { // 最多等 20 秒
       finalStatus = await statusElement.innerText().catch(() => "");
       finalStatus = finalStatus.toLowerCase().trim();
+      
       if (finalStatus === "connecting..." || finalStatus === "") {
+        console.log(`当前状态仍为 "${finalStatus}"，等待 2 秒再试... (${i+1}/10)`);
         await page.waitForTimeout(2000);
       } else {
-        break;
+        break; // 状态变了，退出循环
       }
     }
 
-    console.log(`最终确认状态: "${finalStatus}"`);
+    console.log(`最终探测到的状态为: "${finalStatus}"`);
 
+    // 3. 判断并开机
     if (finalStatus.includes('offline')) {
+      console.log("⚠️ 确认服务器处于 offline 状态，准备开机...");
       const startBtnSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)';
       const startBtn = page.locator(startBtnSelector);
       
       if (await startBtn.isVisible()) {
-        console.log("准备点击 Start 按钮...");
-        // 截图 2：准备点击前的状态
-        await page.screenshot({ path: '2_before_click.png' });
-        
-        await startBtn.click({ force: true });
-        console.log("🚀 Start 按钮已点击！等待服务器响应...");
-        
-        // 点击后等 10 秒，看看网页有没有变化
-        await page.waitForTimeout(10000); 
-        
-        // 截图 3：点击后的最终状态（看看有没有报错信息弹出来）
-        await page.screenshot({ path: '3_after_click.png', fullPage: true });
+        await startBtn.click();
+        console.log("🚀 Start 按钮已精准点击！服务器正在启动...");
+        await page.waitForTimeout(8000); 
       } else {
-        console.log("❌ 按钮不可见！");
-        await page.screenshot({ path: 'error_no_button.png' });
+        console.log("❌ 虽为离线，但 Start 按钮不可见。");
       }
+    } else if (finalStatus.includes('online')) {
+      console.log("✨ 服务器已是在线 (Online) 状态，无需开机。");
     } else {
-      console.log("✨ 服务器在线，无需操作。");
+      console.log(`🤔 探测到未知状态 "${finalStatus}"，为安全起见不执行开机。`);
     }
 
   } catch (err) {
-    console.error("❌ 出错:", err.message);
-    await page.screenshot({ path: 'error_exception.png' });
+    console.error("❌ 执行出错:", err.message);
   } finally {
     await browser.close();
   }

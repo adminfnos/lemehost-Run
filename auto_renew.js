@@ -20,18 +20,15 @@ async function solveCaptcha(imageBuffer) {
 }
 
 // ============================================================
-// 读取 Auto-stop 倒计时（判断续期是否成功的依据）
-// 截图中格式：Auto-stop 00:00:00 或 Auto-stop 00:14:25
-// 返回秒数，全零返回 0
+// 读取 Auto-stop 倒计时秒数
 // ============================================================
 async function getAutoStopSeconds(page) {
   try {
     const bodyText = await page.locator('body').innerText();
-    // 匹配 "Auto-stop" 后面紧跟的时间，格式 HH:MM:SS
     const match = bodyText.match(/Auto-stop\s+(\d{2}):(\d{2}):(\d{2})/);
-    if (!match) return -1; // 找不到说明页面结构有问题
+    if (!match) return -1;
     const seconds = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]);
-    console.log(`⏱️  Auto-stop 倒计时: ${match[1]}:${match[2]}:${match[3]} (${seconds}秒)`);
+    console.log(`⏱️  Auto-stop: ${match[1]}:${match[2]}:${match[3]} (${seconds}秒)`);
     return seconds;
   } catch {
     return -1;
@@ -39,16 +36,41 @@ async function getAutoStopSeconds(page) {
 }
 
 // ============================================================
+// 创建浏览器（支持代理，失败自动降级直连）
+// ============================================================
+async function createBrowser(useProxy) {
+  if (useProxy) {
+    try {
+      console.log("🔌 尝试使用代理模式启动浏览器...");
+      const browser = await chromium.launch({
+        headless: true,
+        proxy: { server: 'socks5://127.0.0.1:10808' }
+      });
+      // 快速测试代理能否访问目标站
+      const ctx = await browser.newContext();
+      const testPage = await ctx.newPage();
+      await testPage.goto('https://lemehost.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await testPage.close();
+      await ctx.close();
+      console.log("✅ 代理模式可用");
+      return { browser, proxyWorked: true };
+    } catch (e) {
+      console.log(`⚠️  代理模式失败 (${e.message.split('\n')[0]})，自动切换直连...`);
+    }
+  }
+  console.log("🔌 使用直连模式...");
+  const browser = await chromium.launch({ headless: true });
+  return { browser, proxyWorked: false };
+}
+
+// ============================================================
 // 主流程
 // ============================================================
 (async () => {
   const useProxy = !!process.env.USE_PROXY;
-  console.log(`🌐 代理模式: ${useProxy ? '启用 socks5://127.0.0.1:10808' : '直连'}`);
+  console.log(`🌐 代理设置: ${useProxy ? '尝试代理，失败自动降级直连' : '直连'}`);
 
-  const browser = await chromium.launch({
-    headless: true,
-    ...(useProxy ? { proxy: { server: 'socks5://127.0.0.1:10808' } } : {})
-  });
+  const { browser } = await createBrowser(useProxy);
 
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -69,7 +91,6 @@ async function getAutoStopSeconds(page) {
       console.log("⚠️  等待 Extend time 超时，继续...");
     });
 
-    // 读取续期前的 Auto-stop 时间
     const autoStopBefore = await getAutoStopSeconds(page);
 
     // ============================================================
@@ -81,7 +102,6 @@ async function getAutoStopSeconds(page) {
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
       console.log(`\n🔁 第 ${attempt}/${MAX_TRIES} 次尝试...`);
 
-      // 检测验证码
       const captchaImg = page.locator('img[src*="captcha"]').first();
       const hasCaptcha = await captchaImg.isVisible().catch(() => false);
       console.log(`🔎 验证码: ${hasCaptcha ? '有' : '无'}`);
@@ -89,7 +109,7 @@ async function getAutoStopSeconds(page) {
       if (hasCaptcha) {
         const imgBuffer = await captchaImg.screenshot();
         await fs.writeFile(`captcha_attempt${attempt}.png`, imgBuffer);
-        console.log(`📸 验证码截图已保存: captcha_attempt${attempt}.png`);
+        console.log(`📸 验证码截图: captcha_attempt${attempt}.png`);
 
         const captchaText = await solveCaptcha(imgBuffer);
 
@@ -110,10 +130,10 @@ async function getAutoStopSeconds(page) {
             return null;
           }, captchaText);
 
-          console.log(filled ? `✅ 验证码已填入 (${filled})` : "❌ 未找到输入框");
+          console.log(filled ? `✅ 已填入 (${filled})` : "❌ 未找到输入框");
           await page.waitForTimeout(500);
         } else {
-          console.log("❌ 识别为空，本次跳过");
+          console.log("❌ 识别为空，跳过填入");
         }
       }
 
@@ -130,39 +150,32 @@ async function getAutoStopSeconds(page) {
 
       await page.screenshot({ path: `after_extend_attempt${attempt}.png`, fullPage: true });
 
-      // 检查错误提示
       const isBlank = await page.locator('text=Captcha cannot be blank').isVisible().catch(() => false);
       const isWrong = await page.locator('text=The verification code is incorrect').isVisible().catch(() => false);
       const isWrong2 = await page.locator('text=Wrong captcha').isVisible().catch(() => false);
 
       if (isBlank) {
-        console.log(`⚠️  [第${attempt}次] 验证码为空提示，重试...`);
+        console.log(`⚠️  [${attempt}] 验证码为空，重试...`);
       } else if (isWrong || isWrong2) {
-        console.log(`⚠️  [第${attempt}次] 验证码错误提示，重试...`);
+        console.log(`⚠️  [${attempt}] 验证码错误，重试...`);
       } else {
-        // 没有错误提示 → 刷新页面检查 Auto-stop 是否从 00:00:00 变成非零
-        console.log("🔄 无错误提示，刷新页面检查 Auto-stop 时间...");
+        console.log("🔄 无错误提示，刷新确认 Auto-stop 时间...");
         await page.reload({ waitUntil: 'networkidle' });
         await page.waitForTimeout(2000);
 
         const autoStopAfter = await getAutoStopSeconds(page);
 
         if (autoStopAfter > 0) {
-          console.log(`🎉 续期成功！Auto-stop 已从 00:00:00 变为非零 (${autoStopAfter}秒)`);
-          success = true;
-          break;
-        } else if (autoStopBefore > 0 && autoStopAfter > autoStopBefore + 60) {
-          console.log(`🎉 续期成功！Auto-stop 时间增加了 ${autoStopAfter - autoStopBefore} 秒`);
+          console.log(`🎉 续期成功！Auto-stop 已变为 ${autoStopAfter} 秒`);
           success = true;
           break;
         } else {
-          console.log(`😐 Auto-stop 仍为零或未增加（${autoStopAfter}秒），重试...`);
+          console.log(`😐 Auto-stop 仍为零，重试...`);
         }
       }
 
-      // 非最后一次 → 刷新获取新验证码
       if (attempt < MAX_TRIES) {
-        console.log("🔄 刷新页面获取新验证码...");
+        console.log("🔄 刷新获取新验证码...");
         await page.reload({ waitUntil: 'networkidle' });
         await page.waitForTimeout(2000);
         await page.waitForSelector('text=Extend time', { timeout: 10000 }).catch(() => {});
@@ -174,10 +187,9 @@ async function getAutoStopSeconds(page) {
     }
 
     // ============================================================
-    // 最终截图 + 状态检测 + 开机
+    // 最终状态截图 + 开机逻辑
     // ============================================================
     await page.screenshot({ path: 'final_status.png', fullPage: true });
-    console.log("📸 最终截图: final_status.png");
 
     if (!success) {
       await page.reload({ waitUntil: 'networkidle' });
@@ -214,7 +226,7 @@ async function getAutoStopSeconds(page) {
     } else if (finalStatus.includes('online')) {
       console.log("✨ 服务器在线，无需开机。");
     } else if (finalStatus.includes('starting')) {
-      console.log("🔄 服务器启动中 (starting)，正常。");
+      console.log("🔄 服务器启动中，正常。");
     } else {
       console.log(`🤔 未知状态: "${finalStatus}"`);
     }

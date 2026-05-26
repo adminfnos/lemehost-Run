@@ -2,20 +2,17 @@ const { chromium } = require('playwright');
 const Tesseract = require('tesseract.js');
 
 // ============================================================
-// Tesseract.js 识别验证码函数（不依赖 Jimp，直接处理 Buffer）
+// Tesseract.js 识别验证码
 // ============================================================
 async function solveCaptchaWithTesseract(imageBuffer) {
   try {
     console.log("🔍 正在用 Tesseract.js 识别验证码...");
-
     const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng', {
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
     });
-
     const result = text.replace(/[^a-zA-Z0-9]/g, '').trim();
     console.log(`🔤 Tesseract 原始结果: "${text.trim()}" → 清洗后: "${result}"`);
     return result || null;
-
   } catch (err) {
     console.error("❌ Tesseract 识别失败:", err.message);
     return null;
@@ -39,79 +36,79 @@ async function solveCaptchaWithTesseract(imageBuffer) {
 
   try {
     console.log("🌐 正在访问页面...");
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+    // ✅ 改用 networkidle，等待页面 JS 完全渲染完毕再操作
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+
+    // 额外等待 2 秒，确保动态内容渲染完成
+    await page.waitForTimeout(2000);
 
     // ============================================================
-    // 检测验证码
+    // 检测验证码（等 Extend time 按钮出现后再判断）
     // ============================================================
-    const captchaLabel = page.locator('text=Captcha');
-    const hasCaptcha = await captchaLabel.isVisible().catch(() => false);
+    await page.waitForSelector('text=Extend time', { timeout: 15000 }).catch(() => {
+      console.log("⚠️  等待 Extend time 按钮超时，继续执行...");
+    });
+
+    const captchaImg = page.locator('img[src*="captcha"]').first();
+    const hasCaptcha = await captchaImg.isVisible().catch(() => false);
     console.log(`🔎 验证码检测结果: ${hasCaptcha ? '有验证码' : '无验证码'}`);
 
     if (hasCaptcha) {
       console.log("⚠️  检测到验证码，开始处理...");
 
-      // 定位验证码图片（已确认 img[src*="captcha"] 有效）
-      const captchaImgLocator = page.locator('img[src*="captcha"]').first();
+      const imgBuffer = await captchaImg.screenshot();
+      await require('fs').promises.writeFile('captcha_raw.png', imgBuffer);
+      console.log("📸 验证码原图已保存: captcha_raw.png");
 
-      let captchaText = null;
-
-      if (await captchaImgLocator.isVisible().catch(() => false)) {
-        const imgBuffer = await captchaImgLocator.screenshot();
-        await require('fs').promises.writeFile('captcha_raw.png', imgBuffer);
-        console.log("📸 验证码原图已保存: captcha_raw.png");
-        captchaText = await solveCaptchaWithTesseract(imgBuffer);
-      } else {
-        console.log("❌ 找不到验证码图片元素");
-      }
+      const captchaText = await solveCaptchaWithTesseract(imgBuffer);
 
       if (captchaText) {
         console.log(`✅ 识别到验证码: "${captchaText}"`);
 
-        // 用 page.evaluate 直接操作 DOM 填入验证码，绕过选择器问题
+        // 用 page.evaluate 直接操作 DOM 填入验证码
         const filled = await page.evaluate((code) => {
-          // 找所有 input 框，优先找 name=captcha 或在 .field-captcha 里的
           const byName = document.querySelector('input[name="captcha"]');
-          if (byName) { byName.value = code; byName.dispatchEvent(new Event('input', { bubbles: true })); return 'input[name=captcha]'; }
-
-          const byClass = document.querySelector('.field-captcha input');
-          if (byClass) { byClass.value = code; byClass.dispatchEvent(new Event('input', { bubbles: true })); return '.field-captcha input'; }
-
-          // 兜底：找 Captcha label 后面的 input
-          const labels = Array.from(document.querySelectorAll('label, span, div'));
-          for (const el of labels) {
-            if (el.textContent.trim() === 'Captcha' || el.textContent.includes('Captcha')) {
-              const parent = el.closest('.form-group') || el.parentElement;
-              if (parent) {
-                const inp = parent.querySelector('input');
-                if (inp) { inp.value = code; inp.dispatchEvent(new Event('input', { bubbles: true })); return 'label-sibling input'; }
-              }
-            }
+          if (byName) {
+            byName.value = code;
+            byName.dispatchEvent(new Event('input', { bubbles: true }));
+            byName.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'input[name=captcha]';
           }
-
-          // 最终兜底：页面上所有 text 类型 input，取最后一个空的
+          const byClass = document.querySelector('.field-captcha input');
+          if (byClass) {
+            byClass.value = code;
+            byClass.dispatchEvent(new Event('input', { bubbles: true }));
+            byClass.dispatchEvent(new Event('change', { bubbles: true }));
+            return '.field-captcha input';
+          }
+          // 兜底：找页面上第一个空的 text input
           const allInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
           const emptyInput = allInputs.find(i => !i.value);
-          if (emptyInput) { emptyInput.value = code; emptyInput.dispatchEvent(new Event('input', { bubbles: true })); return 'fallback empty input'; }
-
+          if (emptyInput) {
+            emptyInput.value = code;
+            emptyInput.dispatchEvent(new Event('input', { bubbles: true }));
+            emptyInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'fallback empty input';
+          }
           return null;
         }, captchaText);
 
         if (filled) {
-          console.log(`✅ 验证码已通过 DOM 填入（方式: ${filled}）`);
+          console.log(`✅ 验证码已填入（方式: ${filled}）`);
         } else {
-          console.log("❌ 所有方式均未找到验证码输入框");
+          console.log("❌ 未找到验证码输入框");
         }
 
         await page.waitForTimeout(800);
 
       } else {
-        console.log("❌ 验证码识别结果为空，跳过填入...");
+        console.log("❌ 验证码识别为空，跳过填入...");
       }
     }
 
     // ============================================================
-    // 点击 Extend time 按钮
+    // 点击 Extend time
     // ============================================================
     const extendBtn = page.locator('text=Extend time');
     if (await extendBtn.isVisible()) {
@@ -126,18 +123,16 @@ async function solveCaptchaWithTesseract(imageBuffer) {
     await page.screenshot({ path: 'after_extend.png', fullPage: true });
     console.log("📸 截图已保存: after_extend.png");
 
-    // ============================================================
-    // 检查是否出现"Captcha cannot be blank"或其他错误提示
-    // ============================================================
-    const captchaError = await page.locator('text=Captcha cannot be blank').isVisible().catch(() => false);
+    // 检查验证码错误提示
+    const captchaBlank = await page.locator('text=Captcha cannot be blank').isVisible().catch(() => false);
     const captchaWrong = await page.locator('text=Wrong captcha').isVisible().catch(() => false);
-    if (captchaError) console.log("⚠️  提示：验证码不能为空（填入失败或识别为空）");
+    if (captchaBlank) console.log("⚠️  提示：验证码不能为空");
     if (captchaWrong) console.log("⚠️  提示：验证码错误（识别内容不正确）");
 
     // ============================================================
     // 刷新页面，等待状态切换
     // ============================================================
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.reload({ waitUntil: 'networkidle' });
     console.log("🔄 页面已刷新，等待状态切换...");
 
     const offlineSelector = 'body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)';
@@ -158,7 +153,7 @@ async function solveCaptchaWithTesseract(imageBuffer) {
     console.log(`📡 最终状态: "${finalStatus}"`);
 
     // ============================================================
-    // 根据状态开机
+    // 根据状态决定是否开机
     // ============================================================
     if (finalStatus.includes('offline')) {
       console.log("⚠️  服务器 offline，准备开机...");
@@ -173,6 +168,13 @@ async function solveCaptchaWithTesseract(imageBuffer) {
       }
     } else if (finalStatus.includes('online')) {
       console.log("✨ 服务器已在线，无需开机。");
+    } else if (finalStatus.includes('starting')) {
+      // ✅ 新增：starting 说明服务器正在启动，属于正常状态
+      console.log("🔄 服务器正在启动中 (starting)，等待 15 秒后再检查状态...");
+      await page.waitForTimeout(15000);
+      await page.reload({ waitUntil: 'networkidle' });
+      const statusAfterWait = await statusElement.innerText().catch(() => "");
+      console.log(`📡 等待后状态: "${statusAfterWait.toLowerCase().trim()}"`);
     } else {
       console.log(`🤔 未知状态 "${finalStatus}"，不执行开机。`);
     }

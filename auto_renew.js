@@ -78,11 +78,11 @@ async function getAutoStopSeconds(page) {
     // 如果是直连且没访问过，现在访问
     if (!page.url().includes('lemehost.com')) {
       console.log("🌐 正在访问页面...");
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } else {
-      // 代理已访问过 domcontentloaded，再等 networkidle
+      // 等待页面JS渲染
       console.log("🌐 等待页面完全加载...");
-      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+      await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
     }
 
     await page.waitForTimeout(2000);
@@ -150,7 +150,7 @@ async function getAutoStopSeconds(page) {
       if (isBlank || isWrong || isWrong2) {
         console.log(`⚠️  [${attempt}] ${isBlank ? '验证码为空' : '验证码错误'}，重试...`);
       } else {
-        await page.reload({ waitUntil: 'networkidle' });
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2000);
         const autoStopAfter = await getAutoStopSeconds(page);
         if (autoStopAfter > 0) {
@@ -163,7 +163,7 @@ async function getAutoStopSeconds(page) {
       }
 
       if (attempt < MAX_TRIES) {
-        await page.reload({ waitUntil: 'networkidle' });
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2000);
         await page.waitForSelector('text=Extend time', { timeout: 10000 }).catch(() => {});
       }
@@ -174,7 +174,7 @@ async function getAutoStopSeconds(page) {
     await page.screenshot({ path: 'final_status.png', fullPage: true });
 
     if (!success) {
-      await page.reload({ waitUntil: 'networkidle' });
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForTimeout(2000);
     }
 

@@ -1,35 +1,28 @@
 name: LemeHost Auto Renew
-
 on:
   workflow_dispatch:
   repository_dispatch:
     types: [cron_trigger]
-
 jobs:
   run-automation:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Install dependencies
         run: |
-          npm install playwright
+          npm install playwright tesseract.js jimp
           npx playwright install chromium
-
       - name: Run Script
         env:
           MY_COOKIES: ${{ secrets.MY_COOKIES }}
         run: node auto_renew.js
-
-      # --- 新增：上传截图文件 ---
       - name: Upload Screenshots
-        if: always() # 无论成功还是失败都上传
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots

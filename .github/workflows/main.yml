@@ -21,22 +21,23 @@ jobs:
           npx playwright install chromium
 
       # -------------------------------------------------------
-      # 代理步骤：如果配置了 VLESS_URL，则启动 xray 将 VLESS 转为
-      # 本地 socks5://127.0.0.1:10808，供 Playwright 使用
-      # 如果没有配置 VLESS_URL，跳过此步骤，直连运行
+      # 代理步骤：读取 VLESS_URL 环境变量，若为空则跳过
       # -------------------------------------------------------
       - name: Setup VLESS proxy (xray)
-        if: ${{ secrets.VLESS_URL != '' }}
         env:
           VLESS_URL: ${{ secrets.VLESS_URL }}
         run: |
+          if [ -z "$VLESS_URL" ]; then
+            echo "⏭️  未配置 VLESS_URL，跳过代理设置，直连运行"
+            exit 0
+          fi
+
           echo "📦 下载 xray..."
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O xray.zip
           unzip -q xray.zip xray
           chmod +x xray
 
-          echo "📝 生成 xray 配置..."
-          # 解析 VLESS URL: vless://uuid@host:port?params#remark
+          echo "📝 解析 VLESS URL 并生成 xray 配置..."
           UUID=$(echo "$VLESS_URL" | sed 's|vless://||' | cut -d'@' -f1)
           HOSTPORT=$(echo "$VLESS_URL" | sed 's|vless://||' | cut -d'@' -f2 | cut -d'?' -f1)
           HOST=$(echo "$HOSTPORT" | cut -d':' -f1)
@@ -50,77 +51,71 @@ jobs:
           FLOW=$(echo "$PARAMS" | tr '&' '\n' | grep '^flow=' | cut -d'=' -f2)
           NETWORK=$(echo "$PARAMS" | tr '&' '\n' | grep '^type=' | cut -d'=' -f2)
 
-          echo "  Host: $HOST  Port: $PORT  Security: $SECURITY  Network: $NETWORK"
+          echo "  Host=$HOST Port=$PORT Security=$SECURITY Network=$NETWORK"
 
-          # 根据安全类型生成 streamSettings
           if [ "$SECURITY" = "reality" ]; then
-            STREAM_SETTINGS=$(cat <<JSON
-          {
-            "network": "${NETWORK:-tcp}",
-            "security": "reality",
-            "realitySettings": {
-              "fingerprint": "${FP:-chrome}",
-              "serverName": "${SNI}",
-              "publicKey": "${PBKEY}",
-              "shortId": "${SID}"
-            }
-          }
-          JSON
-            )
-          else
-            STREAM_SETTINGS=$(cat <<JSON
-          {
-            "network": "${NETWORK:-tcp}",
-            "security": "${SECURITY:-none}"
-          }
-          JSON
-            )
-          fi
-
-          cat > xray_config.json <<JSON
+            cat > xray_config.json <<JSON
           {
             "log": { "loglevel": "warning" },
-            "inbounds": [
-              {
-                "port": 10808,
-                "listen": "127.0.0.1",
-                "protocol": "socks",
-                "settings": { "auth": "noauth", "udp": true }
+            "inbounds": [{
+              "port": 10808, "listen": "127.0.0.1",
+              "protocol": "socks",
+              "settings": { "auth": "noauth", "udp": true }
+            }],
+            "outbounds": [{
+              "protocol": "vless",
+              "settings": {
+                "vnext": [{ "address": "${HOST}", "port": ${PORT},
+                  "users": [{ "id": "${UUID}", "flow": "${FLOW}", "encryption": "none" }]
+                }]
+              },
+              "streamSettings": {
+                "network": "${NETWORK:-tcp}",
+                "security": "reality",
+                "realitySettings": {
+                  "fingerprint": "${FP:-chrome}",
+                  "serverName": "${SNI}",
+                  "publicKey": "${PBKEY}",
+                  "shortId": "${SID}"
+                }
               }
-            ],
-            "outbounds": [
-              {
-                "protocol": "vless",
-                "settings": {
-                  "vnext": [
-                    {
-                      "address": "${HOST}",
-                      "port": ${PORT},
-                      "users": [
-                        {
-                          "id": "${UUID}",
-                          "flow": "${FLOW}",
-                          "encryption": "none"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                "streamSettings": ${STREAM_SETTINGS}
-              }
-            ]
+            }]
           }
           JSON
+          else
+            cat > xray_config.json <<JSON
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [{
+              "port": 10808, "listen": "127.0.0.1",
+              "protocol": "socks",
+              "settings": { "auth": "noauth", "udp": true }
+            }],
+            "outbounds": [{
+              "protocol": "vless",
+              "settings": {
+                "vnext": [{ "address": "${HOST}", "port": ${PORT},
+                  "users": [{ "id": "${UUID}", "flow": "${FLOW}", "encryption": "none" }]
+                }]
+              },
+              "streamSettings": {
+                "network": "${NETWORK:-tcp}",
+                "security": "${SECURITY:-none}"
+              }
+            }]
+          }
+          JSON
+          fi
 
-          echo "🚀 启动 xray 代理（后台运行）..."
+          echo "🚀 启动 xray..."
           ./xray -config xray_config.json &
           sleep 3
 
-          # 验证代理是否正常工作
-          echo "🔍 测试代理连接..."
-          curl -s --socks5 127.0.0.1:10808 --max-time 10 https://api.ipify.org && echo "" && echo "✅ 代理连接正常" || echo "⚠️  代理连接测试失败，继续执行..."
+          echo "🔍 测试代理连通性..."
+          curl -s --socks5 127.0.0.1:10808 --max-time 10 https://api.ipify.org \
+            && echo -e "\n✅ 代理正常" \
+            || echo "⚠️  代理测试失败，继续执行..."
 
-          # 设置环境变量，告知 Node.js 脚本使用代理
           echo "USE_PROXY=1" >> $GITHUB_ENV
 
       - name: Run Script

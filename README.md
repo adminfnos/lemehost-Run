@@ -1,7 +1,8 @@
-# lemehost-Run
+# lemehost-Run  
 
-获取 Cookies:   
-登录 lemehost.com按 F12 打开开发者工具点击 Application → Cookies → https://lemehost.com      
+VLESS_URL
+
+Application → Cookies → https://lemehost.com      
 新建 MY_COOKIES，内容格式如下（请根据你实际抓到的 cookie 修改）：   
 ```
 [

@@ -21,14 +21,15 @@ jobs:
           npx playwright install chromium
 
       # -------------------------------------------------------
-      # 代理步骤：读取 VLESS_URL 环境变量，若为空则跳过
+      # 代理步骤：将 VLESS(WS+TLS) 转为本地 socks5://127.0.0.1:10808
+      # 未配置 VLESS_URL 时自动跳过
       # -------------------------------------------------------
       - name: Setup VLESS proxy (xray)
         env:
           VLESS_URL: ${{ secrets.VLESS_URL }}
         run: |
           if [ -z "$VLESS_URL" ]; then
-            echo "⏭️  未配置 VLESS_URL，跳过代理设置，直连运行"
+            echo "⏭️  未配置 VLESS_URL，直连运行"
             exit 0
           fi
 
@@ -37,86 +38,157 @@ jobs:
           unzip -q xray.zip xray
           chmod +x xray
 
-          echo "📝 解析 VLESS URL 并生成 xray 配置..."
+          echo "📝 解析 VLESS URL..."
+          # 格式: vless://uuid@host:port?params#remark
           UUID=$(echo "$VLESS_URL" | sed 's|vless://||' | cut -d'@' -f1)
           HOSTPORT=$(echo "$VLESS_URL" | sed 's|vless://||' | cut -d'@' -f2 | cut -d'?' -f1)
           HOST=$(echo "$HOSTPORT" | cut -d':' -f1)
           PORT=$(echo "$HOSTPORT" | cut -d':' -f2)
           PARAMS=$(echo "$VLESS_URL" | cut -d'?' -f2 | cut -d'#' -f1)
+
           SECURITY=$(echo "$PARAMS" | tr '&' '\n' | grep '^security=' | cut -d'=' -f2)
-          SNI=$(echo "$PARAMS" | tr '&' '\n' | grep '^sni=' | cut -d'=' -f2)
-          PBKEY=$(echo "$PARAMS" | tr '&' '\n' | grep '^pbk=' | cut -d'=' -f2)
-          SID=$(echo "$PARAMS" | tr '&' '\n' | grep '^sid=' | cut -d'=' -f2)
-          FP=$(echo "$PARAMS" | tr '&' '\n' | grep '^fp=' | cut -d'=' -f2)
-          FLOW=$(echo "$PARAMS" | tr '&' '\n' | grep '^flow=' | cut -d'=' -f2)
-          NETWORK=$(echo "$PARAMS" | tr '&' '\n' | grep '^type=' | cut -d'=' -f2)
+          SNI=$(echo "$PARAMS"     | tr '&' '\n' | grep '^sni='      | cut -d'=' -f2)
+          NETWORK=$(echo "$PARAMS" | tr '&' '\n' | grep '^type='     | cut -d'=' -f2)
+          FLOW=$(echo "$PARAMS"    | tr '&' '\n' | grep '^flow='     | cut -d'=' -f2)
+          PBKEY=$(echo "$PARAMS"   | tr '&' '\n' | grep '^pbk='      | cut -d'=' -f2)
+          SID=$(echo "$PARAMS"     | tr '&' '\n' | grep '^sid='      | cut -d'=' -f2)
+          FP=$(echo "$PARAMS"      | tr '&' '\n' | grep '^fp='       | cut -d'=' -f2)
+          # WebSocket 专用参数
+          WS_HOST=$(echo "$PARAMS" | tr '&' '\n' | grep '^host='     | cut -d'=' -f2)
+          WS_PATH=$(python3 -c "import urllib.parse,os; print(urllib.parse.unquote(os.environ.get('PARAMS','')))" 2>/dev/null | tr '&' '\n' | grep '^path=' | cut -d'=' -f2 || echo "$PARAMS" | tr '&' '\n' | grep '^path=' | cut -d'=' -f2 | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null)
+
+          # 兜底：直接 URL decode path
+          RAW_PATH=$(echo "$PARAMS" | tr '&' '\n' | grep '^path=' | cut -d'=' -f2)
+          WS_PATH=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('$RAW_PATH'))" 2>/dev/null || echo "$RAW_PATH")
 
           echo "  Host=$HOST Port=$PORT Security=$SECURITY Network=$NETWORK"
+          echo "  WS_HOST=$WS_HOST  WS_PATH=$WS_PATH  SNI=$SNI"
 
-          if [ "$SECURITY" = "reality" ]; then
-            cat > xray_config.json <<JSON
-          {
-            "log": { "loglevel": "warning" },
-            "inbounds": [{
-              "port": 10808, "listen": "127.0.0.1",
-              "protocol": "socks",
-              "settings": { "auth": "noauth", "udp": true }
-            }],
-            "outbounds": [{
-              "protocol": "vless",
-              "settings": {
-                "vnext": [{ "address": "${HOST}", "port": ${PORT},
-                  "users": [{ "id": "${UUID}", "flow": "${FLOW}", "encryption": "none" }]
-                }]
-              },
-              "streamSettings": {
-                "network": "${NETWORK:-tcp}",
-                "security": "reality",
-                "realitySettings": {
-                  "fingerprint": "${FP:-chrome}",
-                  "serverName": "${SNI}",
-                  "publicKey": "${PBKEY}",
-                  "shortId": "${SID}"
-                }
-              }
-            }]
-          }
-          JSON
+          # 生成 streamSettings（根据协议类型）
+          if [ "$NETWORK" = "ws" ] && [ "$SECURITY" = "tls" ]; then
+            echo "🔧 检测到 WebSocket + TLS 配置"
+            cat > xray_config.json << JSON
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": 10808,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": { "auth": "noauth", "udp": true }
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "${HOST}",
+        "port": ${PORT},
+        "users": [{
+          "id": "${UUID}",
+          "encryption": "none"
+        }]
+      }]
+    },
+    "streamSettings": {
+      "network": "ws",
+      "security": "tls",
+      "tlsSettings": {
+        "serverName": "${SNI:-$HOST}",
+        "allowInsecure": true
+      },
+      "wsSettings": {
+        "path": "${WS_PATH:-/}",
+        "headers": {
+          "Host": "${WS_HOST:-$HOST}"
+        }
+      }
+    }
+  }]
+}
+JSON
+
+          elif [ "$SECURITY" = "reality" ]; then
+            echo "🔧 检测到 REALITY 配置"
+            cat > xray_config.json << JSON
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": 10808,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": { "auth": "noauth", "udp": true }
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "${HOST}",
+        "port": ${PORT},
+        "users": [{
+          "id": "${UUID}",
+          "flow": "${FLOW}",
+          "encryption": "none"
+        }]
+      }]
+    },
+    "streamSettings": {
+      "network": "${NETWORK:-tcp}",
+      "security": "reality",
+      "realitySettings": {
+        "fingerprint": "${FP:-chrome}",
+        "serverName": "${SNI}",
+        "publicKey": "${PBKEY}",
+        "shortId": "${SID}"
+      }
+    }
+  }]
+}
+JSON
+
           else
-            cat > xray_config.json <<JSON
-          {
-            "log": { "loglevel": "warning" },
-            "inbounds": [{
-              "port": 10808, "listen": "127.0.0.1",
-              "protocol": "socks",
-              "settings": { "auth": "noauth", "udp": true }
-            }],
-            "outbounds": [{
-              "protocol": "vless",
-              "settings": {
-                "vnext": [{ "address": "${HOST}", "port": ${PORT},
-                  "users": [{ "id": "${UUID}", "flow": "${FLOW}", "encryption": "none" }]
-                }]
-              },
-              "streamSettings": {
-                "network": "${NETWORK:-tcp}",
-                "security": "${SECURITY:-none}"
-              }
-            }]
-          }
-          JSON
+            echo "🔧 使用通用 TLS/None 配置"
+            cat > xray_config.json << JSON
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": 10808,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": { "auth": "noauth", "udp": true }
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "${HOST}",
+        "port": ${PORT},
+        "users": [{
+          "id": "${UUID}",
+          "encryption": "none"
+        }]
+      }]
+    },
+    "streamSettings": {
+      "network": "${NETWORK:-tcp}",
+      "security": "${SECURITY:-none}"
+    }
+  }]
+}
+JSON
           fi
 
           echo "🚀 启动 xray..."
           ./xray -config xray_config.json &
-          sleep 3
+          sleep 5
 
           echo "🔍 测试代理连通性..."
-          curl -s --socks5 127.0.0.1:10808 --max-time 10 https://api.ipify.org \
-            && echo -e "\n✅ 代理正常" \
-            || echo "⚠️  代理测试失败，继续执行..."
-
-          echo "USE_PROXY=1" >> $GITHUB_ENV
+          IP=$(curl -s --socks5 127.0.0.1:10808 --max-time 15 https://api.ipify.org 2>/dev/null)
+          if [ -n "$IP" ]; then
+            echo "✅ 代理正常，出口IP: $IP"
+            echo "USE_PROXY=1" >> $GITHUB_ENV
+          else
+            echo "⚠️  代理连接失败，切换为直连模式"
+            # 不写 USE_PROXY，Node 脚本会直连
+          fi
 
       - name: Run Script
         env:

@@ -9,18 +9,126 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - name: Install dependencies
         run: |
           npm install playwright tesseract.js
           npx playwright install chromium
+
+      # -------------------------------------------------------
+      # 代理步骤：如果配置了 VLESS_URL，则启动 xray 将 VLESS 转为
+      # 本地 socks5://127.0.0.1:10808，供 Playwright 使用
+      # 如果没有配置 VLESS_URL，跳过此步骤，直连运行
+      # -------------------------------------------------------
+      - name: Setup VLESS proxy (xray)
+        if: ${{ secrets.VLESS_URL != '' }}
+        env:
+          VLESS_URL: ${{ secrets.VLESS_URL }}
+        run: |
+          echo "📦 下载 xray..."
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O xray.zip
+          unzip -q xray.zip xray
+          chmod +x xray
+
+          echo "📝 生成 xray 配置..."
+          # 解析 VLESS URL: vless://uuid@host:port?params#remark
+          UUID=$(echo "$VLESS_URL" | sed 's|vless://||' | cut -d'@' -f1)
+          HOSTPORT=$(echo "$VLESS_URL" | sed 's|vless://||' | cut -d'@' -f2 | cut -d'?' -f1)
+          HOST=$(echo "$HOSTPORT" | cut -d':' -f1)
+          PORT=$(echo "$HOSTPORT" | cut -d':' -f2)
+          PARAMS=$(echo "$VLESS_URL" | cut -d'?' -f2 | cut -d'#' -f1)
+          SECURITY=$(echo "$PARAMS" | tr '&' '\n' | grep '^security=' | cut -d'=' -f2)
+          SNI=$(echo "$PARAMS" | tr '&' '\n' | grep '^sni=' | cut -d'=' -f2)
+          PBKEY=$(echo "$PARAMS" | tr '&' '\n' | grep '^pbk=' | cut -d'=' -f2)
+          SID=$(echo "$PARAMS" | tr '&' '\n' | grep '^sid=' | cut -d'=' -f2)
+          FP=$(echo "$PARAMS" | tr '&' '\n' | grep '^fp=' | cut -d'=' -f2)
+          FLOW=$(echo "$PARAMS" | tr '&' '\n' | grep '^flow=' | cut -d'=' -f2)
+          NETWORK=$(echo "$PARAMS" | tr '&' '\n' | grep '^type=' | cut -d'=' -f2)
+
+          echo "  Host: $HOST  Port: $PORT  Security: $SECURITY  Network: $NETWORK"
+
+          # 根据安全类型生成 streamSettings
+          if [ "$SECURITY" = "reality" ]; then
+            STREAM_SETTINGS=$(cat <<JSON
+          {
+            "network": "${NETWORK:-tcp}",
+            "security": "reality",
+            "realitySettings": {
+              "fingerprint": "${FP:-chrome}",
+              "serverName": "${SNI}",
+              "publicKey": "${PBKEY}",
+              "shortId": "${SID}"
+            }
+          }
+          JSON
+            )
+          else
+            STREAM_SETTINGS=$(cat <<JSON
+          {
+            "network": "${NETWORK:-tcp}",
+            "security": "${SECURITY:-none}"
+          }
+          JSON
+            )
+          fi
+
+          cat > xray_config.json <<JSON
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [
+              {
+                "port": 10808,
+                "listen": "127.0.0.1",
+                "protocol": "socks",
+                "settings": { "auth": "noauth", "udp": true }
+              }
+            ],
+            "outbounds": [
+              {
+                "protocol": "vless",
+                "settings": {
+                  "vnext": [
+                    {
+                      "address": "${HOST}",
+                      "port": ${PORT},
+                      "users": [
+                        {
+                          "id": "${UUID}",
+                          "flow": "${FLOW}",
+                          "encryption": "none"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "streamSettings": ${STREAM_SETTINGS}
+              }
+            ]
+          }
+          JSON
+
+          echo "🚀 启动 xray 代理（后台运行）..."
+          ./xray -config xray_config.json &
+          sleep 3
+
+          # 验证代理是否正常工作
+          echo "🔍 测试代理连接..."
+          curl -s --socks5 127.0.0.1:10808 --max-time 10 https://api.ipify.org && echo "" && echo "✅ 代理连接正常" || echo "⚠️  代理连接测试失败，继续执行..."
+
+          # 设置环境变量，告知 Node.js 脚本使用代理
+          echo "USE_PROXY=1" >> $GITHUB_ENV
+
       - name: Run Script
         env:
           MY_COOKIES: ${{ secrets.MY_COOKIES }}
+          USE_PROXY: ${{ env.USE_PROXY }}
         run: node auto_renew.js
+
       - name: Upload Screenshots
         if: always()
         uses: actions/upload-artifact@v4

@@ -64,12 +64,11 @@ jobs:
           if flow:
               user["flow"] = flow
 
-          # 注意：新版 xray 已移除 allowInsecure，改用 pinnedPeerCertSha256=[] 跳过证书验证
           if network == 'ws' and security == 'tls':
               stream = {
                   "network": "ws",
                   "security": "tls",
-                  "tlsSettings": {"serverName": sni, "pinnedPeerCertSha256": []},
+                  "tlsSettings": {"serverName": sni},
                   "wsSettings": {"path": ws_path, "headers": {"Host": ws_host}}
               }
           elif security == 'reality':
@@ -82,7 +81,7 @@ jobs:
               stream = {
                   "network": network,
                   "security": "tls",
-                  "tlsSettings": {"serverName": sni, "pinnedPeerCertSha256": []}
+                  "tlsSettings": {"serverName": sni}
               }
           else:
               stream = {"network": network, "security": "none"}

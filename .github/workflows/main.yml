@@ -39,7 +39,6 @@ jobs:
           import os, json, urllib.parse
 
           url = os.environ['VLESS_URL']
-          # 解析 vless://uuid@host:port?params#remark
           url_body = url[len('vless://'):]
           uuid, rest = url_body.split('@', 1)
           hostport, paramstr = rest.split('?', 1)
@@ -65,11 +64,12 @@ jobs:
           if flow:
               user["flow"] = flow
 
+          # 注意：新版 xray 已移除 allowInsecure，改用 pinnedPeerCertSha256=[] 跳过证书验证
           if network == 'ws' and security == 'tls':
               stream = {
                   "network": "ws",
                   "security": "tls",
-                  "tlsSettings": {"serverName": sni, "allowInsecure": True},
+                  "tlsSettings": {"serverName": sni, "pinnedPeerCertSha256": []},
                   "wsSettings": {"path": ws_path, "headers": {"Host": ws_host}}
               }
           elif security == 'reality':
@@ -79,7 +79,11 @@ jobs:
                   "realitySettings": {"fingerprint": fp, "serverName": sni, "publicKey": pbk, "shortId": sid}
               }
           elif security == 'tls':
-              stream = {"network": network, "security": "tls", "tlsSettings": {"serverName": sni, "allowInsecure": True}}
+              stream = {
+                  "network": network,
+                  "security": "tls",
+                  "tlsSettings": {"serverName": sni, "pinnedPeerCertSha256": []}
+              }
           else:
               stream = {"network": network, "security": "none"}
 

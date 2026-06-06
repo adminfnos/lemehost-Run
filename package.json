@@ -1,0 +1,10 @@
+{
+  "name": "lemehost-auto-renew",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "playwright": "latest",
+    "sharp": "latest",
+    "tesseract.js": "latest"
+  }
+}

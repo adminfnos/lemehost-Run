@@ -15,9 +15,9 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
+- name: Install dependencies
         run: |
-          npm install playwright tesseract.js
+          npm install playwright tesseract.js sharp
           npx playwright install chromium
 
       - name: Setup VLESS proxy (xray)

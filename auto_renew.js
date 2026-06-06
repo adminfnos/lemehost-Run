@@ -1,12 +1,43 @@
 const { chromium } = require('playwright');
 const Tesseract = require('tesseract.js');
+const sharp = require('sharp');
 const fs = require('fs').promises;
 
-async function solveCaptcha(imageBuffer) {
+// ============================================================
+// 图片预处理：放大 3x + 灰度 + 归一化 + 锐化 + 二值化
+// ============================================================
+async function preprocessCaptcha(imageBuffer, attempt) {
   try {
-    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng', {
+    const processed = await sharp(imageBuffer)
+      .resize({ factor: 3, kernel: sharp.kernel.lanczos3 })
+      .grayscale()
+      .normalise()
+      .sharpen({ sigma: 1.5 })
+      .threshold(128)
+      .png()
+      .toBuffer();
+
+    await fs.writeFile(`captcha_processed_attempt${attempt}.png`, processed);
+    console.log(`🖼️  预处理完成，已保存 captcha_processed_attempt${attempt}.png`);
+    return processed;
+  } catch (err) {
+    console.error("❌ 图片预处理失败:", err.message);
+    return imageBuffer;
+  }
+}
+
+// ============================================================
+// OCR 识别
+// ============================================================
+async function solveCaptcha(imageBuffer, attempt) {
+  try {
+    const processed = await preprocessCaptcha(imageBuffer, attempt);
+
+    const { data: { text } } = await Tesseract.recognize(processed, 'eng', {
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+      tessedit_pageseg_mode: '8',
     });
+
     const result = text.replace(/[^a-zA-Z0-9]/g, '').trim();
     console.log(`🔤 Tesseract: "${text.trim()}" → "${result}"`);
     return result || null;
@@ -16,6 +47,9 @@ async function solveCaptcha(imageBuffer) {
   }
 }
 
+// ============================================================
+// 读取 Auto-stop 时间
+// ============================================================
 async function getAutoStopSeconds(page) {
   try {
     const bodyText = await page.locator('body').innerText();
@@ -28,7 +62,7 @@ async function getAutoStopSeconds(page) {
 }
 
 // ============================================================
-// 主流程：先尝试代理，超时自动降级直连
+// 主流程
 // ============================================================
 (async () => {
   const useProxy = !!process.env.USE_PROXY;
@@ -62,7 +96,7 @@ async function getAutoStopSeconds(page) {
     }
   }
 
-  // --- 直连（代理失败或未配置代理时）---
+  // --- 直连 ---
   if (!browser) {
     console.log("🔌 使用直连模式...");
     browser = await chromium.launch({ headless: true });
@@ -75,12 +109,11 @@ async function getAutoStopSeconds(page) {
   }
 
   try {
-    // 如果是直连且没访问过，现在访问
+    // 如果是直连且还没访问过页面
     if (!page.url().includes('lemehost.com')) {
       console.log("🌐 正在访问页面...");
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } else {
-      // 等待页面JS渲染
       console.log("🌐 等待页面完全加载...");
       await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
     }
@@ -90,25 +123,36 @@ async function getAutoStopSeconds(page) {
       console.log("⚠️  等待 Extend time 超时，继续...");
     });
 
-    const autoStopBefore = await getAutoStopSeconds(page);
+    await getAutoStopSeconds(page);
 
     // ============================================================
-    // 最多重试 3 次
+    // 最多重试 5 次，每次失败都刷新页面获取新验证码
     // ============================================================
-    const MAX_TRIES = 3;
+    const MAX_TRIES = 5;
     let success = false;
 
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
       console.log(`\n🔁 第 ${attempt}/${MAX_TRIES} 次尝试...`);
+
+      // 从第2次起，每次失败先刷新页面拿到全新验证码
+      if (attempt > 1) {
+        console.log("🔄 刷新页面，获取新验证码...");
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(2000);
+        await page.waitForSelector('text=Extend time', { timeout: 10000 }).catch(() => {});
+      }
 
       const captchaImg = page.locator('img[src*="captcha"]').first();
       const hasCaptcha = await captchaImg.isVisible().catch(() => false);
       console.log(`🔎 验证码: ${hasCaptcha ? '有' : '无'}`);
 
       if (hasCaptcha) {
-        const imgBuffer = await captchaImg.screenshot();
-        await fs.writeFile(`captcha_attempt${attempt}.png`, imgBuffer);
-        const captchaText = await solveCaptcha(imgBuffer);
+        // 截图原始验证码
+        const rawBuffer = await captchaImg.screenshot();
+        await fs.writeFile(`captcha_raw_attempt${attempt}.png`, rawBuffer);
+
+        // OCR 识别（内含预处理放大）
+        const captchaText = await solveCaptcha(rawBuffer, attempt);
 
         if (captchaText) {
           const filled = await page.evaluate((code) => {
@@ -124,10 +168,11 @@ async function getAutoStopSeconds(page) {
             }
             return null;
           }, captchaText);
-          console.log(filled ? `✅ 已填入 (${filled})` : "❌ 未找到输入框");
+          console.log(filled ? `✅ 已填入 "${captchaText}" (${filled})` : "❌ 未找到输入框");
           await page.waitForTimeout(500);
         } else {
-          console.log("❌ 识别为空，跳过");
+          console.log("❌ 识别为空，跳过本次点击");
+          continue; // 直接进入下一次循环（会刷新页面）
         }
       }
 
@@ -137,7 +182,7 @@ async function getAutoStopSeconds(page) {
         console.log("✅ 已点击 Extend time");
         await page.waitForTimeout(4000);
       } else {
-        console.log("❌ 未找到 Extend time");
+        console.log("❌ 未找到 Extend time 按钮");
         break;
       }
 
@@ -148,8 +193,10 @@ async function getAutoStopSeconds(page) {
       const isWrong2 = await page.locator('text=Wrong captcha').isVisible().catch(() => false);
 
       if (isBlank || isWrong || isWrong2) {
-        console.log(`⚠️  [${attempt}] ${isBlank ? '验证码为空' : '验证码错误'}，重试...`);
+        console.log(`⚠️  [${attempt}] ${isBlank ? '验证码为空' : '验证码错误'}，准备重试...`);
+        // 继续循环，下一次会刷新页面
       } else {
+        // 没有错误提示，验证通过，检查续期结果
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2000);
         const autoStopAfter = await getAutoStopSeconds(page);
@@ -158,18 +205,12 @@ async function getAutoStopSeconds(page) {
           success = true;
           break;
         } else {
-          console.log("😐 Auto-stop 仍为零，重试...");
+          console.log("😐 Auto-stop 仍为零，继续重试...");
         }
-      }
-
-      if (attempt < MAX_TRIES) {
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(2000);
-        await page.waitForSelector('text=Extend time', { timeout: 10000 }).catch(() => {});
       }
     }
 
-    if (!success) console.log("\n⚠️  3次后未确认续期成功");
+    if (!success) console.log("\n⚠️  5次后未确认续期成功");
 
     await page.screenshot({ path: 'final_status.png', fullPage: true });
 
@@ -178,6 +219,7 @@ async function getAutoStopSeconds(page) {
       await page.waitForTimeout(2000);
     }
 
+    // 读取最终服务器状态
     const statusEl = page.locator('body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)');
     let finalStatus = "";
     for (let i = 0; i < 10; i++) {

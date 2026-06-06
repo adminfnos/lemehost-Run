@@ -14,9 +14,6 @@ Application → Cookies → https://lemehost.com
 
 Cron-job.org 触发：
 
-你需要创建一个 Fine-grained Personal Access Token (PAT)，权限给到 Contents: Read & Write 和 Metadata: Read。
-
-在 cron-job.org 中设置 POST 请求：
 
 URL: https://api.github.com/repos/你的用户名/仓库名/dispatches
 

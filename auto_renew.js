@@ -1,48 +1,45 @@
 const { chromium } = require('playwright');
-const Tesseract = require('tesseract.js');
 const sharp = require('sharp');
 const fs = require('fs').promises;
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 // ============================================================
-// 图片预处理：放大 3x + 灰度 + 归一化 + 锐化 + 二值化
+// 图片预处理：放大 3x
 // ============================================================
 async function preprocessCaptcha(imageBuffer, attempt) {
   try {
     const processed = await sharp(imageBuffer)
       .resize({ factor: 3, kernel: sharp.kernel.lanczos3 })
-      .grayscale()
-      .normalise()
-      .sharpen({ sigma: 1.5 })
-      .threshold(128)
       .png()
       .toBuffer();
-
-    await fs.writeFile(`captcha_processed_attempt${attempt}.png`, processed);
-    console.log(`🖼️  预处理完成，已保存 captcha_processed_attempt${attempt}.png`);
-    return processed;
+    const path = `captcha_processed_attempt${attempt}.png`;
+    await fs.writeFile(path, processed);
+    return path;
   } catch (err) {
     console.error("❌ 图片预处理失败:", err.message);
-    return imageBuffer;
+    const path = `captcha_raw_attempt${attempt}.png`;
+    await fs.writeFile(path, imageBuffer);
+    return path;
   }
 }
 
 // ============================================================
-// OCR 识别
+// 用 ddddocr (Python) 识别验证码
 // ============================================================
 async function solveCaptcha(imageBuffer, attempt) {
   try {
-    const processed = await preprocessCaptcha(imageBuffer, attempt);
-
-    const { data: { text } } = await Tesseract.recognize(processed, 'eng', {
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
-      tessedit_pageseg_mode: '8',
+    const imagePath = await preprocessCaptcha(imageBuffer, attempt);
+    const { stdout, stderr } = await execFileAsync('python3', ['solve_captcha.py', imagePath], {
+      timeout: 15000
     });
-
-    const result = text.replace(/[^a-zA-Z0-9]/g, '').trim();
-    console.log(`🔤 Tesseract: "${text.trim()}" → "${result}"`);
+    if (stderr) console.warn("⚠️  ddddocr stderr:", stderr.trim());
+    const result = stdout.replace(/[^a-zA-Z0-9]/g, '').trim();
+    console.log(`🔤 ddddocr 识别: "${result}"`);
     return result || null;
   } catch (err) {
-    console.error("❌ Tesseract 失败:", err.message);
+    console.error("❌ ddddocr 识别失败:", err.message);
     return null;
   }
 }
@@ -70,7 +67,6 @@ async function getAutoStopSeconds(page) {
 
   let browser, context, page;
 
-  // --- 尝试代理 ---
   if (useProxy) {
     console.log("🔌 尝试代理模式...");
     try {
@@ -84,7 +80,6 @@ async function getAutoStopSeconds(page) {
       const cookies = JSON.parse(process.env.MY_COOKIES);
       await context.addCookies(cookies);
       page = await context.newPage();
-
       console.log("🌐 代理模式访问目标页面（测试20秒）...");
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       console.log("✅ 代理模式可用，继续使用代理");
@@ -96,7 +91,6 @@ async function getAutoStopSeconds(page) {
     }
   }
 
-  // --- 直连 ---
   if (!browser) {
     console.log("🔌 使用直连模式...");
     browser = await chromium.launch({ headless: true });
@@ -109,7 +103,6 @@ async function getAutoStopSeconds(page) {
   }
 
   try {
-    // 如果是直连且还没访问过页面
     if (!page.url().includes('lemehost.com')) {
       console.log("🌐 正在访问页面...");
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -125,16 +118,12 @@ async function getAutoStopSeconds(page) {
 
     await getAutoStopSeconds(page);
 
-    // ============================================================
-    // 最多重试 5 次，每次失败都刷新页面获取新验证码
-    // ============================================================
     const MAX_TRIES = 5;
     let success = false;
 
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
       console.log(`\n🔁 第 ${attempt}/${MAX_TRIES} 次尝试...`);
 
-      // 从第2次起，每次失败先刷新页面拿到全新验证码
       if (attempt > 1) {
         console.log("🔄 刷新页面，获取新验证码...");
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -147,11 +136,9 @@ async function getAutoStopSeconds(page) {
       console.log(`🔎 验证码: ${hasCaptcha ? '有' : '无'}`);
 
       if (hasCaptcha) {
-        // 截图原始验证码
         const rawBuffer = await captchaImg.screenshot();
         await fs.writeFile(`captcha_raw_attempt${attempt}.png`, rawBuffer);
 
-        // OCR 识别（内含预处理放大）
         const captchaText = await solveCaptcha(rawBuffer, attempt);
 
         if (captchaText) {
@@ -171,8 +158,8 @@ async function getAutoStopSeconds(page) {
           console.log(filled ? `✅ 已填入 "${captchaText}" (${filled})` : "❌ 未找到输入框");
           await page.waitForTimeout(500);
         } else {
-          console.log("❌ 识别为空，跳过本次点击");
-          continue; // 直接进入下一次循环（会刷新页面）
+          console.log("❌ 识别为空，跳过本次");
+          continue;
         }
       }
 
@@ -194,9 +181,7 @@ async function getAutoStopSeconds(page) {
 
       if (isBlank || isWrong || isWrong2) {
         console.log(`⚠️  [${attempt}] ${isBlank ? '验证码为空' : '验证码错误'}，准备重试...`);
-        // 继续循环，下一次会刷新页面
       } else {
-        // 没有错误提示，验证通过，检查续期结果
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2000);
         const autoStopAfter = await getAutoStopSeconds(page);
@@ -219,8 +204,7 @@ async function getAutoStopSeconds(page) {
       await page.waitForTimeout(2000);
     }
 
-    // 读取最终服务器状态
-    const statusEl = page.locator('body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-heading > span:nth-child(2)');
+    const statusEl = page.locator('body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)');
     let finalStatus = "";
     for (let i = 0; i < 10; i++) {
       finalStatus = (await statusEl.innerText().catch(() => "")).toLowerCase().trim();

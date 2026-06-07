@@ -19,7 +19,7 @@ jobs:
         run: |
           npm install playwright sharp
           npx playwright install chromium
-          pip install ddddocr --quiet
+          pip install ddddocr opencv-python-headless pillow --quiet
 
       - name: Setup VLESS proxy (xray)
         env:

@@ -204,31 +204,63 @@ async function getAutoStopSeconds(page) {
       await page.waitForTimeout(2000);
     }
 
-    const statusEl = page.locator('body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)');
+    // ============================================================
+    // 读取最终服务器状态（多 selector 候选，不依赖单一脆弱路径）
+    // ============================================================
     let finalStatus = "";
+    const statusSelectors = [
+      '.panel-heading span:nth-child(2)',
+      '.panel-heading .label',
+      '.server-status',
+      '.panel-heading span'
+    ];
+
     for (let i = 0; i < 10; i++) {
-      finalStatus = (await statusEl.innerText().catch(() => "")).toLowerCase().trim();
-      if (finalStatus === "connecting..." || finalStatus === "") {
-        console.log(`⏳ "${finalStatus}"，等待... (${i+1}/10)`);
-        await page.waitForTimeout(2000);
-      } else break;
+      for (const sel of statusSelectors) {
+        const text = (await page.locator(sel).first().innerText().catch(() => "")).toLowerCase().trim();
+        if (text && text !== "connecting...") {
+          finalStatus = text;
+          break;
+        }
+      }
+      if (finalStatus && finalStatus !== "connecting...") break;
+      console.log(`⏳ 等待状态稳定... (${i+1}/10)`);
+      await page.waitForTimeout(2000);
     }
 
     console.log(`📡 最终状态: "${finalStatus}"`);
 
-    if (finalStatus.includes('offline')) {
-      const startBtn = page.locator('body > div > div > div.server-view > div > div.col-md-3 > div > div.panel-body > button:nth-child(1)');
-      if (await startBtn.isVisible()) {
+    // 双重保险：同时检查 body 文字和状态样式类
+    const bodyText = (await page.locator('body').innerText().catch(() => "")).toLowerCase();
+    const isOffline = finalStatus.includes('offline')
+      || bodyText.includes('server is offline')
+      || await page.locator('.label-danger, .status-offline, span.offline').isVisible().catch(() => false);
+    const isOnline  = finalStatus.includes('online') && !finalStatus.includes('offline');
+    const isStarting = finalStatus.includes('starting') || finalStatus.includes('start');
+
+    if (isOffline) {
+      console.log("🔴 服务器离线，尝试点击 Start...");
+      const startBtn = page.locator('button:has-text("Start"), input[value="Start"]').first();
+      if (await startBtn.isVisible().catch(() => false)) {
         await startBtn.click();
         console.log("🚀 已点击 Start！");
         await page.waitForTimeout(8000);
+      } else {
+        console.log("❌ 未找到 Start 按钮");
       }
-    } else if (finalStatus.includes('online')) {
-      console.log("✨ 服务器在线。");
-    } else if (finalStatus.includes('starting')) {
-      console.log("🔄 启动中，正常。");
+    } else if (isOnline) {
+      console.log("✨ 服务器在线，无需操作。");
+    } else if (isStarting) {
+      console.log("🔄 服务器启动中，正常。");
     } else {
-      console.log(`🤔 未知状态: "${finalStatus}"`);
+      console.log(`🤔 未知状态: "${finalStatus}"，尝试查找 Start 按钮...`);
+      // 状态不明时也尝试点击 Start，避免漏掉 offline 情况
+      const startBtn = page.locator('button:has-text("Start"), input[value="Start"]').first();
+      if (await startBtn.isVisible().catch(() => false)) {
+        await startBtn.click();
+        console.log("🚀 状态不明但找到 Start，已点击！");
+        await page.waitForTimeout(8000);
+      }
     }
 
   } catch (err) {

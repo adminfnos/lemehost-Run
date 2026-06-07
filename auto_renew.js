@@ -6,37 +6,58 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
 // ============================================================
-// 图片预处理：放大 3x
+// 直接下载验证码原图（避免截图压缩失真）
 // ============================================================
-async function preprocessCaptcha(imageBuffer, attempt) {
+async function downloadCaptchaImage(page, attempt) {
   try {
-    const processed = await sharp(imageBuffer)
-      .resize({ factor: 3, kernel: sharp.kernel.lanczos3 })
-      .png()
-      .toBuffer();
-    const path = `captcha_processed_attempt${attempt}.png`;
-    await fs.writeFile(path, processed);
-    return path;
+    const captchaImg = page.locator('img[src*="captcha"]').first();
+    const src = await captchaImg.getAttribute('src');
+    if (!src) throw new Error('无法获取验证码 src');
+
+    // 构造完整 URL
+    const baseUrl = 'https://lemehost.com';
+    const fullUrl = src.startsWith('http') ? src : baseUrl + src;
+    console.log(`🔗 验证码URL: ${fullUrl}`);
+
+    // 用 page.evaluate 在浏览器内 fetch，带上 cookie
+    const imageBase64 = await page.evaluate(async (url) => {
+      const res = await fetch(url, { credentials: 'include' });
+      const buf = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }, fullUrl);
+
+    const imageBuffer = Buffer.from(imageBase64, 'base64');
+    const rawPath = `captcha_raw_attempt${attempt}.png`;
+    await fs.writeFile(rawPath, imageBuffer);
+    console.log(`🖼️  原图已保存: ${rawPath} (${imageBuffer.length} bytes)`);
+    return rawPath;
   } catch (err) {
-    console.error("❌ 图片预处理失败:", err.message);
-    const path = `captcha_raw_attempt${attempt}.png`;
-    await fs.writeFile(path, imageBuffer);
-    return path;
+    console.warn(`⚠️  下载原图失败(${err.message})，降级用截图`);
+    // 降级：截图
+    const captchaImg = page.locator('img[src*="captcha"]').first();
+    const rawBuffer = await captchaImg.screenshot();
+    const rawPath = `captcha_raw_attempt${attempt}.png`;
+    await fs.writeFile(rawPath, rawBuffer);
+    return rawPath;
   }
 }
 
 // ============================================================
-// 用 ddddocr (Python) 识别验证码
+// 用 ddddocr (Python) 多策略识别验证码
 // ============================================================
-async function solveCaptcha(imageBuffer, attempt) {
+async function solveCaptcha(imagePath, attempt) {
   try {
-    const imagePath = await preprocessCaptcha(imageBuffer, attempt);
     const { stdout, stderr } = await execFileAsync('python3', ['solve_captcha.py', imagePath], {
-      timeout: 15000
+      timeout: 30000
     });
-    if (stderr) console.warn("⚠️  ddddocr stderr:", stderr.trim());
+    if (stderr) console.log(`🔍 ddddocr详情:\n${stderr.trim()}`);
     const result = stdout.replace(/[^a-zA-Z0-9]/g, '').trim();
-    console.log(`🔤 ddddocr 识别: "${result}"`);
+    console.log(`🔤 最终识别: "${result}"`);
     return result || null;
   } catch (err) {
     console.error("❌ ddddocr 识别失败:", err.message);
@@ -136,10 +157,10 @@ async function getAutoStopSeconds(page) {
       console.log(`🔎 验证码: ${hasCaptcha ? '有' : '无'}`);
 
       if (hasCaptcha) {
-        const rawBuffer = await captchaImg.screenshot();
-        await fs.writeFile(`captcha_raw_attempt${attempt}.png`, rawBuffer);
+        // 直接下载原图，避免截图压缩
+        const imagePath = await downloadCaptchaImage(page, attempt);
 
-        const captchaText = await solveCaptcha(rawBuffer, attempt);
+        const captchaText = await solveCaptcha(imagePath, attempt);
 
         if (captchaText) {
           const filled = await page.evaluate((code) => {
@@ -205,7 +226,7 @@ async function getAutoStopSeconds(page) {
     }
 
     // ============================================================
-    // 读取最终服务器状态（多 selector 候选，不依赖单一脆弱路径）
+    // 读取最终服务器状态
     // ============================================================
     let finalStatus = "";
     const statusSelectors = [
@@ -230,10 +251,9 @@ async function getAutoStopSeconds(page) {
 
     console.log(`📡 最终状态: "${finalStatus}"`);
 
-    // 双重保险：同时检查 body 文字和状态样式类
-    const bodyText = (await page.locator('body').innerText().catch(() => "")).toLowerCase();
+    const bodyTextFinal = (await page.locator('body').innerText().catch(() => "")).toLowerCase();
     const isOffline = finalStatus.includes('offline')
-      || bodyText.includes('server is offline')
+      || bodyTextFinal.includes('server is offline')
       || await page.locator('.label-danger, .status-offline, span.offline').isVisible().catch(() => false);
     const isOnline  = finalStatus.includes('online') && !finalStatus.includes('offline');
     const isStarting = finalStatus.includes('starting') || finalStatus.includes('start');
@@ -254,7 +274,6 @@ async function getAutoStopSeconds(page) {
       console.log("🔄 服务器启动中，正常。");
     } else {
       console.log(`🤔 未知状态: "${finalStatus}"，尝试查找 Start 按钮...`);
-      // 状态不明时也尝试点击 Start，避免漏掉 offline 情况
       const startBtn = page.locator('button:has-text("Start"), input[value="Start"]').first();
       if (await startBtn.isVisible().catch(() => false)) {
         await startBtn.click();

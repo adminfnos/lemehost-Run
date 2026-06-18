@@ -66,6 +66,34 @@ async function solveCaptcha(imagePath, attempt) {
 }
 
 // ============================================================
+// 点击验证码图片，让它换一张（不刷新整页）
+// ============================================================
+async function refreshCaptchaByClick(page) {
+  try {
+    const captchaImg = page.locator('img[src*="captcha"]').first();
+    const oldSrc = await captchaImg.getAttribute('src').catch(() => null);
+
+    await captchaImg.click({ timeout: 5000 });
+    console.log("🖱️  已点击验证码图片");
+
+    // 等待 src 发生变化（多数验证码点击后会带新的时间戳/token）
+    for (let i = 0; i < 10; i++) {
+      await page.waitForTimeout(300);
+      const newSrc = await captchaImg.getAttribute('src').catch(() => null);
+      if (newSrc && newSrc !== oldSrc) {
+        console.log("🔄 验证码图片已刷新（src 已变化）");
+        return true;
+      }
+    }
+    console.log("⚠️  未检测到 src 变化，按延时继续（图片可能已用同一URL换了新图）");
+    return true;
+  } catch (err) {
+    console.warn(`⚠️  点击验证码刷新失败: ${err.message}`);
+    return false;
+  }
+}
+
+// ============================================================
 // 读取 Auto-stop 时间
 // ============================================================
 async function getAutoStopSeconds(page) {
@@ -145,11 +173,11 @@ async function getAutoStopSeconds(page) {
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
       console.log(`\n🔁 第 ${attempt}/${MAX_TRIES} 次尝试...`);
 
+      // 第一次直接用页面上已有的验证码；之后每次都点击验证码图片换一张，不刷新整页
       if (attempt > 1) {
-        console.log("🔄 刷新页面，获取新验证码...");
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(2000);
-        await page.waitForSelector('text=Extend time', { timeout: 10000 }).catch(() => {});
+        console.log("🔄 点击验证码图片获取新验证码（不刷新整页）...");
+        await refreshCaptchaByClick(page);
+        await page.waitForTimeout(800);
       }
 
       const captchaImg = page.locator('img[src*="captcha"]').first();
@@ -179,7 +207,7 @@ async function getAutoStopSeconds(page) {
           console.log(filled ? `✅ 已填入 "${captchaText}" (${filled})` : "❌ 未找到输入框");
           await page.waitForTimeout(500);
         } else {
-          console.log("❌ 识别为空，跳过本次");
+          console.log("❌ 识别为空，本次跳过，下一轮会重新点击验证码再试");
           continue;
         }
       }
@@ -201,7 +229,7 @@ async function getAutoStopSeconds(page) {
       const isWrong2 = await page.locator('text=Wrong captcha').isVisible().catch(() => false);
 
       if (isBlank || isWrong || isWrong2) {
-        console.log(`⚠️  [${attempt}] ${isBlank ? '验证码为空' : '验证码错误'}，准备重试...`);
+        console.log(`⚠️  [${attempt}] ${isBlank ? '验证码为空' : '验证码错误'}，下一轮将点击验证码图片换一张再试...`);
       } else {
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2000);

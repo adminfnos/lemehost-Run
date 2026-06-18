@@ -192,11 +192,15 @@ async function getAutoStopSeconds(page) {
 
         if (captchaText) {
           const filled = await page.evaluate((code) => {
+            // 实际的 name 是 "ExtendFreePlanForm[captcha]"，用 *= 做包含匹配，
+            // 不再依赖"是否为空"来判断，避免刷新验证码后旧值残留导致找不到输入框
             const inp =
-              document.querySelector('input[name="captcha"]') ||
+              document.querySelector('input[name*="captcha"]') ||
               document.querySelector('.field-captcha input') ||
-              Array.from(document.querySelectorAll('input[type="text"],input:not([type])')).find(i => !i.value);
+              document.querySelector('input[id*="captcha"]') ||
+              Array.from(document.querySelectorAll('input[type="text"],input:not([type])'))[0];
             if (inp) {
+              inp.value = '';
               inp.value = code;
               inp.dispatchEvent(new Event('input', { bubbles: true }));
               inp.dispatchEvent(new Event('change', { bubbles: true }));

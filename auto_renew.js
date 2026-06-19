@@ -191,6 +191,11 @@ async function getAutoStopSeconds(page) {
         const captchaText = await solveCaptcha(imagePath, attempt);
 
         if (captchaText) {
+          // 长度校验：该验证码通常为6-7位，识别结果太短说明漏识别了，直接换图重试
+          if (captchaText.length < 6 || captchaText.length > 8) {
+            console.log(`⚠️  识别结果 "${captchaText}" 长度异常(${captchaText.length}位，期望6-8位)，换图重试...`);
+            continue;
+          }
           const filled = await page.evaluate((code) => {
             // 实际的 name 是 "ExtendFreePlanForm[captcha]"，用 *= 做包含匹配，
             // 不再依赖"是否为空"来判断，避免刷新验证码后旧值残留导致找不到输入框
@@ -290,28 +295,47 @@ async function getAutoStopSeconds(page) {
     const isOnline  = finalStatus.includes('online') && !finalStatus.includes('offline');
     const isStarting = finalStatus.includes('starting') || finalStatus.includes('start');
 
+    // ============================================================
+    // 通用 Start 点击函数：等待按钮从 disabled 变为 enabled 再点
+    // ============================================================
+    async function clickStartWhenReady() {
+      const startBtn = page.locator('button[data-state="start"], button:has-text("Start"), input[value="Start"]').first();
+      const exists = await startBtn.isVisible().catch(() => false);
+      if (!exists) { console.log("❌ 未找到 Start 按钮"); return; }
+
+      // 等待按钮可点击（最多等 60 秒，应对 stopping → offline 的过渡）
+      console.log("⏳ 等待 Start 按钮变为可点击状态（最多60秒）...");
+      for (let w = 0; w < 12; w++) {
+        const disabled = await startBtn.evaluate(el => el.disabled || el.hasAttribute('disabled')).catch(() => false);
+        if (!disabled) break;
+        console.log(`  [${w+1}/12] 按钮仍 disabled，等待5秒...`);
+        await page.waitForTimeout(5000);
+        // 刷新页面状态（不整页reload，只等）
+        if (w % 3 === 2) {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+        }
+      }
+      const stillDisabled = await startBtn.evaluate(el => el.disabled || el.hasAttribute('disabled')).catch(() => false);
+      if (stillDisabled) {
+        console.log("⚠️  Start 按钮等待60秒后仍 disabled，跳过");
+        return;
+      }
+      await startBtn.click();
+      console.log("🚀 已点击 Start！");
+      await page.waitForTimeout(8000);
+    }
+
     if (isOffline) {
       console.log("🔴 服务器离线，尝试点击 Start...");
-      const startBtn = page.locator('button:has-text("Start"), input[value="Start"]').first();
-      if (await startBtn.isVisible().catch(() => false)) {
-        await startBtn.click();
-        console.log("🚀 已点击 Start！");
-        await page.waitForTimeout(8000);
-      } else {
-        console.log("❌ 未找到 Start 按钮");
-      }
+      await clickStartWhenReady();
     } else if (isOnline) {
       console.log("✨ 服务器在线，无需操作。");
     } else if (isStarting) {
       console.log("🔄 服务器启动中，正常。");
     } else {
       console.log(`🤔 未知状态: "${finalStatus}"，尝试查找 Start 按钮...`);
-      const startBtn = page.locator('button:has-text("Start"), input[value="Start"]').first();
-      if (await startBtn.isVisible().catch(() => false)) {
-        await startBtn.click();
-        console.log("🚀 状态不明但找到 Start，已点击！");
-        await page.waitForTimeout(8000);
-      }
+      await clickStartWhenReady();
     }
 
   } catch (err) {

@@ -167,7 +167,7 @@ async function getAutoStopSeconds(page) {
 
     await getAutoStopSeconds(page);
 
-    const MAX_TRIES = 5;
+    const MAX_TRIES = 10;
     let success = false;
 
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
@@ -191,9 +191,9 @@ async function getAutoStopSeconds(page) {
         const captchaText = await solveCaptcha(imagePath, attempt);
 
         if (captchaText) {
-          // 长度校验：该验证码通常为6-7位，识别结果太短说明漏识别了，直接换图重试
-          if (captchaText.length < 6 || captchaText.length > 8) {
-            console.log(`⚠️  识别结果 "${captchaText}" 长度异常(${captchaText.length}位，期望6-8位)，换图重试...`);
+          // 长度校验：该验证码固定为7位，识别结果不是7位说明漏识别/多识别，直接换图重试
+          if (captchaText.length !== 7) {
+            console.log(`⚠️  识别结果 "${captchaText}" 长度异常(${captchaText.length}位，期望7位)，换图重试...`);
             continue;
           }
           const filled = await page.evaluate((code) => {

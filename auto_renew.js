@@ -167,7 +167,7 @@ async function getAutoStopSeconds(page) {
 
     await getAutoStopSeconds(page);
 
-    const MAX_TRIES = 20;
+    const MAX_TRIES = 50;
     let success = false;
 
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
